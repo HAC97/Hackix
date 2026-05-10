@@ -1,0 +1,16 @@
+{
+  "name": "google-drive-player",
+  "version": "1.0.0",
+  "description": "Reproductor de videos desde Google Drive con OAuth",
+  "scripts": {
+    "install:all": "cd server && npm install && cd ../client && npm install",
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "server": "cd server && node index.js",
+    "client": "cd client && npx react-scripts start",
+    "build": "cd client && npx react-scripts build",
+    "start": "cd server && node index.js"
+  },
+  "dependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
