@@ -19,32 +19,51 @@ const SCOPES = [
 ];
 
 const VIDEO_MIME_TYPES = [
-  'video/mp4',
-  'video/webm',
-  'video/ogg',
-  'video/quicktime',
-  'video/x-msvideo',
-  'video/x-matroska',
-  'video/x-ms-wmv',
-  'video/x-flv',
-  'video/3gpp',
-  'video/mpeg',
+  'video/mp4', 'video/webm', 'video/ogg', 'video/quicktime',
+  'video/x-msvideo', 'video/x-matroska', 'video/x-ms-wmv',
+  'video/x-flv', 'video/3gpp', 'video/mpeg',
 ];
 
 const IMAGE_MIME_TYPES = [
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-  'image/gif',
-  'image/bmp',
-  'image/tiff',
+  'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp', 'image/tiff',
 ];
 
-const oauth2Client = new OAuth2Client(
+// ── OAuth Clients ────────────────────────────────────────────────────
+
+// Client usado solo para login de usuarios (verificar identidad)
+const loginClient = new OAuth2Client(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
   process.env.GOOGLE_REDIRECT_URI
 );
+
+// Owner client: siempre accede al Drive del dueño
+let ownerClient = null;
+let ownerDrive = null;
+
+function initOwnerClient() {
+  const token = process.env.OWNER_REFRESH_TOKEN;
+  if (!token) {
+    console.warn('OWNER_REFRESH_TOKEN no configurado. Las consultas a Drive fallaran.');
+    return null;
+  }
+  if (ownerClient) return ownerClient;
+
+  ownerClient = new OAuth2Client(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET
+  );
+  ownerClient.setCredentials({ refresh_token: token });
+  ownerDrive = google.drive({ version: 'v3', auth: ownerClient });
+  console.log('Owner client inicializado con refresh token');
+  return ownerClient;
+}
+
+function getOwnerDrive() {
+  if (!ownerDrive) initOwnerClient();
+  if (!ownerDrive) throw new Error('OWNER_REFRESH_TOKEN no configurado');
+  return ownerDrive;
+}
 
 // ── Middleware ───────────────────────────────────────────────────────
 app.use(cors({
@@ -63,23 +82,21 @@ app.use(session({
   },
 }));
 
-// Trust proxy in production (Render, Heroku, etc.)
 if (NODE_ENV === 'production') {
   app.set('trust proxy', 1);
 }
 
-// ── Auth Middleware ──────────────────────────────────────────────────
+// ── Auth Middleware (solo verifica que el usuario hizo login) ────────
 function requireAuth(req, res, next) {
   if (!req.session.tokens) {
     return res.status(401).json({ error: 'No autenticado. Ve a /auth/google' });
   }
-  oauth2Client.setCredentials(req.session.tokens);
   next();
 }
 
-// ── Auth Routes ─────────────────────────────────────────────────────
+// ── Auth Routes (login de cualquier usuario) ────────────────────────
 app.get('/auth/google', (req, res) => {
-  const authUrl = oauth2Client.generateAuthUrl({
+  const authUrl = loginClient.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
     scope: SCOPES,
@@ -90,11 +107,11 @@ app.get('/auth/google', (req, res) => {
 app.get('/auth/google/callback', async (req, res) => {
   try {
     const { code } = req.query;
-    const { tokens } = await oauth2Client.getToken(code);
+    const { tokens } = await loginClient.getToken(code);
     req.session.tokens = tokens;
 
-    oauth2Client.setCredentials(tokens);
-    const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
+    loginClient.setCredentials(tokens);
+    const oauth2 = google.oauth2({ version: 'v2', auth: loginClient });
     const userInfo = await oauth2.userinfo.get();
     req.session.user = userInfo.data;
 
@@ -110,6 +127,7 @@ app.get('/api/auth/status', (req, res) => {
     return res.json({
       authenticated: true,
       user: req.session.user,
+      isOwner: req.session.user.email === process.env.OWNER_EMAIL,
     });
   }
   res.json({ authenticated: false });
@@ -121,10 +139,48 @@ app.get('/api/auth/logout', (req, res) => {
   });
 });
 
-// ── Video Routes ────────────────────────────────────────────────────
+// ── Admin: obtener refresh token del dueño ──────────────────────────
+app.get('/api/admin/my-token', requireAuth, (req, res) => {
+  const rt = req.session.tokens?.refresh_token;
+  if (!rt) {
+    return res.json({
+      refresh_token: null,
+      warning: 'No se recibio refresh token. Cierra sesion y vuelve a entrar. Asegurate de que el .env tenga el redirect URI correcto.',
+    });
+  }
+  res.json({ refresh_token: rt });
+});
+
+// ── Admin: Debug del owner client ───────────────────────────────────
+app.get('/api/admin/debug', requireAuth, async (req, res) => {
+  try {
+    const drive = getOwnerDrive();
+    const about = await drive.about.get({ fields: 'user' });
+    res.json({
+      ownerEmail: process.env.OWNER_EMAIL,
+      tokenSet: !!process.env.OWNER_REFRESH_TOKEN,
+      driveAccount: about.data.user?.emailAddress || about.data.user?.displayName || 'desconocido',
+    });
+  } catch (err) {
+    res.json({
+      ownerEmail: process.env.OWNER_EMAIL,
+      tokenSet: !!process.env.OWNER_REFRESH_TOKEN,
+      error: err.message,
+    });
+  }
+});
+
+// ── Video Routes (siempre usan el Drive del dueño) ──────────────────
 app.get('/api/videos', requireAuth, async (req, res) => {
   try {
-    const drive = google.drive({ version: 'v3', auth: oauth2Client });
+    const drive = getOwnerDrive();
+
+    // Debug: confirmar qué cuenta se está usando
+    let driveOwner = 'desconocido';
+    try {
+      const about = await drive.about.get({ fields: 'user' });
+      driveOwner = about.data.user?.emailAddress || about.data.user?.displayName || 'desconocido';
+    } catch (_) {}
 
     let hatrixFolderId = null;
     const searchNames = ['Hackix', 'hackix', 'HACKIX'];
@@ -150,7 +206,7 @@ app.get('/api/videos', requireAuth, async (req, res) => {
       const folderNames = (allFolders.data.files || []).map(f => f.name);
       return res.json({
         entries: [],
-        warning: `No se encontro la carpeta "Hackix". Carpetas en tu Drive: ${folderNames.join(', ') || '(ninguna)'}`,
+        warning: `No se encontro la carpeta "Hackix". Carpetas en el Drive del dueño: ${folderNames.join(', ') || '(ninguna)'}`,
       });
     }
 
@@ -173,9 +229,7 @@ app.get('/api/videos', requireAuth, async (req, res) => {
           pageSize: 50,
           fields: 'files(id, name, mimeType, size)',
         });
-
         const files = filesRes.data.files || [];
-
         const video = files.find(f => VIDEO_MIME_TYPES.includes(f.mimeType));
         const image = files.find(f => IMAGE_MIME_TYPES.includes(f.mimeType));
 
@@ -187,20 +241,18 @@ app.get('/api/videos', requireAuth, async (req, res) => {
       })
     );
 
-    const validEntries = entries.filter(e => e.video);
-
-    res.json({ entries: validEntries });
+    res.json({ entries: entries.filter(e => e.video), driveOwner });
   } catch (err) {
     console.error('Error listando videos:', err.message);
     res.status(500).json({ error: 'Error al listar videos' });
   }
 });
 
-// ── Stream video con Range support ──────────────────────────────────
+// ── Stream video (desde el Drive del dueño) ─────────────────────────
 app.get('/api/videos/:id/stream', requireAuth, async (req, res) => {
   try {
     const fileId = req.params.id;
-    const drive = google.drive({ version: 'v3', auth: oauth2Client });
+    const drive = getOwnerDrive();
 
     const meta = await drive.files.get({
       fileId,
@@ -210,7 +262,6 @@ app.get('/api/videos/:id/stream', requireAuth, async (req, res) => {
     const fileSize = parseInt(meta.data.size, 10);
     const fileName = meta.data.name;
     const mimeType = meta.data.mimeType;
-
     const range = req.headers.range;
 
     if (range) {
@@ -259,10 +310,10 @@ app.get('/api/videos/:id/stream', requireAuth, async (req, res) => {
   }
 });
 
-// ── Servir imagenes de portada ──────────────────────────────────────
+// ── Servir portadas (desde el Drive del dueño) ──────────────────────
 app.get('/api/images/:id', requireAuth, async (req, res) => {
   try {
-    const drive = google.drive({ version: 'v3', auth: oauth2Client });
+    const drive = getOwnerDrive();
     const meta = await drive.files.get({
       fileId: req.params.id,
       fields: 'mimeType',
@@ -295,4 +346,5 @@ app.listen(PORT, () => {
   console.log(`Servidor corriendo en puerto ${PORT}`);
   console.log(`Frontend: ${FRONTEND_URL}`);
   console.log(`Entorno: ${NODE_ENV}`);
+  initOwnerClient();
 });
