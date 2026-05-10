@@ -23,9 +23,9 @@
   align-items: center;
 }
 
-.header h1 {
-  font-size: 1.25rem;
-  color: #58a6ff;
+.header .logo-wrapper {
+  display: flex;
+  align-items: center;
 }
 
 .header-right {

@@ -2,9 +2,12 @@ import React, { useState, useEffect } from 'react';
 import Login from './components/Login';
 import VideoList from './components/VideoList';
 import Player from './components/Player';
+import Logo from './components/Logo';
 import './App.css';
 
-const API = '';
+const isDev = process.env.NODE_ENV !== 'production';
+const API = isDev ? 'http://localhost:4000' : '';
+const AUTH_URL = isDev ? 'http://localhost:4000/auth/google' : '/auth/google';
 
 function App() {
   const [auth, setAuth] = useState({ checked: false, authenticated: false, user: null });
@@ -60,13 +63,13 @@ function App() {
   }
 
   if (!auth.authenticated) {
-    return <Login apiUrl={API} onLogin={checkAuth} />;
+    return <Login authUrl={AUTH_URL} onLogin={checkAuth} />;
   }
 
   return (
     <div className="app">
       <header className="header">
-        <h1>Google Drive Player</h1>
+        <Logo size={28} />
         <div className="header-right">
           {auth.user && (
             <span className="user-name">
