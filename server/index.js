@@ -28,6 +28,45 @@ const IMAGE_MIME_TYPES = [
   'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp', 'image/tiff',
 ];
 
+// ── Helpers ─────────────────────────────────────────────────────────
+function detectLang(filename) {
+  const match = filename.match(/\.([a-z]{2}(-[A-Z]{2})?)\.(srt|vtt)$/i);
+  if (match) return match[1].toLowerCase();
+  const base = filename.replace(/\.(srt|vtt)$/i, '').toLowerCase();
+  if (base.includes('es') || base.includes('spanish')) return 'es';
+  if (base.includes('en') || base.includes('english')) return 'en';
+  if (base.includes('fr') || base.includes('french')) return 'fr';
+  if (base.includes('pt') || base.includes('portuguese')) return 'pt';
+  if (base.includes('de') || base.includes('german')) return 'de';
+  if (base.includes('ja') || base.includes('japanese')) return 'ja';
+  if (base.includes('ko') || base.includes('korean')) return 'ko';
+  if (base.includes('zh') || base.includes('chinese')) return 'zh';
+  return 'es';
+}
+
+function extractSeasonNumber(folderName) {
+  const match = folderName.match(/(\d+)/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+function srtToVtt(content) {
+  let vtt = 'WEBVTT\n\n';
+  const blocks = content.replace(/\r\n/g, '\n').split(/\n\n+/);
+  for (const block of blocks) {
+    const lines = block.trim().split('\n');
+    if (lines.length < 2) continue;
+    // Skip index line if it's a number
+    let timeIdx = 0;
+    if (/^\d+$/.test(lines[0].trim())) timeIdx = 1;
+    if (timeIdx >= lines.length - 1) continue;
+    // Convert timestamp: 00:00:01,000 --> 00:00:01.000
+    const timeLine = lines[timeIdx].replace(/,/g, '.');
+    const text = lines.slice(timeIdx + 1).join('\n');
+    vtt += timeLine + '\n' + text + '\n\n';
+  }
+  return vtt;
+}
+
 // ── OAuth Clients ────────────────────────────────────────────────────
 
 // Client usado solo para login de usuarios (verificar identidad)
@@ -170,34 +209,67 @@ app.get('/api/admin/debug', requireAuth, async (req, res) => {
   }
 });
 
+// ── Helpers de Drive ─────────────────────────────────────────────────
+
+async function listSubfolders(drive, parentId) {
+  const res = await drive.files.list({
+    q: `'${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+    pageSize: 100,
+    fields: 'files(id, name)',
+  });
+  return res.data.files || [];
+}
+
+async function processMediaFolder(drive, folder, extra = {}) {
+  const filesRes = await drive.files.list({
+    q: `'${folder.id}' in parents and trashed=false`,
+    pageSize: 50,
+    fields: 'files(id, name, mimeType, size, createdTime)',
+  });
+  const files = filesRes.data.files || [];
+  const video = files.find(f => VIDEO_MIME_TYPES.includes(f.mimeType));
+  const image = files.find(f => IMAGE_MIME_TYPES.includes(f.mimeType));
+  const subtitles = files.filter(f =>
+    f.name.endsWith('.srt') || f.name.endsWith('.vtt') ||
+    f.mimeType === 'text/vtt'
+  ).map(s => ({ id: s.id, name: s.name, lang: detectLang(s.name) }));
+
+  return {
+    ...extra,
+    folderName: folder.name,
+    video: video ? { id: video.id, name: video.name, mimeType: video.mimeType, size: video.size, year: video.createdTime ? new Date(video.createdTime).getFullYear() : null } : null,
+    image: image ? { id: image.id, name: image.name } : null,
+    subtitles: subtitles.length > 0 ? subtitles : null,
+  };
+}
+
 // ── Video Routes (siempre usan el Drive del dueño) ──────────────────
 app.get('/api/videos', requireAuth, async (req, res) => {
   try {
     const drive = getOwnerDrive();
 
-    // Debug: confirmar qué cuenta se está usando
     let driveOwner = 'desconocido';
     try {
       const about = await drive.about.get({ fields: 'user' });
       driveOwner = about.data.user?.emailAddress || about.data.user?.displayName || 'desconocido';
     } catch (_) {}
 
-    let hatrixFolderId = null;
+    let hackixFolderId = null;
     const searchNames = ['Hackix', 'hackix', 'HACKIX'];
 
     for (const name of searchNames) {
-      const hatrixRes = await drive.files.list({
+      const res = await drive.files.list({
         q: `name='${name}' and mimeType='application/vnd.google-apps.folder' and trashed=false`,
         pageSize: 5,
         fields: 'files(id, name)',
       });
-      if (hatrixRes.data.files && hatrixRes.data.files.length > 0) {
-        hatrixFolderId = hatrixRes.data.files[0].id;
+      if (res.data.files && res.data.files.length > 0) {
+        hackixFolderId = res.data.files[0].id;
         break;
       }
     }
 
-    if (!hatrixFolderId) {
+    if (!hackixFolderId) {
       const allFolders = await drive.files.list({
         q: "mimeType='application/vnd.google-apps.folder' and trashed=false",
         pageSize: 20,
@@ -206,42 +278,80 @@ app.get('/api/videos', requireAuth, async (req, res) => {
       const folderNames = (allFolders.data.files || []).map(f => f.name);
       return res.json({
         entries: [],
-        warning: `No se encontro la carpeta "Hackix". Carpetas en el Drive del dueño: ${folderNames.join(', ') || '(ninguna)'}`,
+        warning: `No se encontro la carpeta "Hackix". Carpetas en el Drive del dueno: ${folderNames.join(', ') || '(ninguna)'}`,
       });
     }
 
-    const subfoldersRes = await drive.files.list({
-      q: `'${hatrixFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
-      pageSize: 100,
-      fields: 'files(id, name)',
-    });
+    const rootFolders = await listSubfolders(drive, hackixFolderId);
 
-    const subfolders = subfoldersRes.data.files || [];
+    const peliculasFolder = rootFolders.find(f => f.name.toLowerCase() === 'peliculas');
+    const seriesFolder = rootFolders.find(f => f.name.toLowerCase() === 'series');
 
-    if (subfolders.length === 0) {
-      return res.json({ entries: [], warning: 'La carpeta "Hackix" esta vacia. Crea subcarpetas con videos y portadas adentro.' });
+    if (!peliculasFolder && !seriesFolder) {
+      if (rootFolders.length === 0) {
+        return res.json({ movies: [], series: [], warning: 'La carpeta "Hackix" esta vacia. Crea las carpetas "Peliculas" y/o "Series" adentro.' });
+      }
+      // Fallback: legacy structure (direct subfolders = movies)
+      const entries = await Promise.all(
+        rootFolders.map(f => processMediaFolder(drive, f, { type: 'movie' }))
+      );
+      return res.json({ movies: entries.filter(e => e.video), series: [], driveOwner });
     }
 
-    const entries = await Promise.all(
-      subfolders.map(async (folder) => {
-        const filesRes = await drive.files.list({
-          q: `'${folder.id}' in parents and trashed=false`,
-          pageSize: 50,
-          fields: 'files(id, name, mimeType, size)',
+    let movies = [];
+
+    // ── Peliculas ──────────────────────────────────────
+    if (peliculasFolder) {
+      const movieFolders = await listSubfolders(drive, peliculasFolder.id);
+      const movieEntries = await Promise.all(
+        movieFolders.map(f => processMediaFolder(drive, f, { type: 'movie' }))
+      );
+      movies = movieEntries.filter(e => e.video);
+    }
+
+    // ── Series ─────────────────────────────────────────
+    const seriesList = [];
+
+    if (seriesFolder) {
+      const seriesFolders = await listSubfolders(drive, seriesFolder.id);
+
+      for (const series of seriesFolders) {
+        // Look for a poster image at the series folder level
+        const seriesFilesRes = await drive.files.list({
+          q: `'${series.id}' in parents and trashed=false`,
+          pageSize: 10,
+          fields: 'files(id, name, mimeType)',
         });
-        const files = filesRes.data.files || [];
-        const video = files.find(f => VIDEO_MIME_TYPES.includes(f.mimeType));
-        const image = files.find(f => IMAGE_MIME_TYPES.includes(f.mimeType));
+        const seriesFiles = seriesFilesRes.data.files || [];
+        const seriesImage = seriesFiles.find(f => IMAGE_MIME_TYPES.includes(f.mimeType));
 
-        return {
-          folderName: folder.name,
-          video: video ? { id: video.id, name: video.name, mimeType: video.mimeType, size: video.size } : null,
-          image: image ? { id: image.id, name: image.name } : null,
-        };
-      })
-    );
+        const seasonFolders = await listSubfolders(drive, series.id);
+        const episodes = [];
 
-    res.json({ entries: entries.filter(e => e.video), driveOwner });
+        for (const season of seasonFolders) {
+          const seasonNum = extractSeasonNumber(season.name);
+          const seasonLabel = seasonNum != null ? `Temporada ${seasonNum}` : season.name;
+          const episodeFolders = await listSubfolders(drive, season.id);
+
+          for (const episode of episodeFolders) {
+            const entry = await processMediaFolder(drive, episode, {
+              season: seasonLabel,
+            });
+            if (entry.video) episodes.push(entry);
+          }
+        }
+
+        if (episodes.length > 0) {
+          seriesList.push({
+            name: series.name,
+            image: seriesImage ? { id: seriesImage.id, name: seriesImage.name } : null,
+            episodes,
+          });
+        }
+      }
+    }
+
+    res.json({ movies, series: seriesList, driveOwner });
   } catch (err) {
     console.error('Error listando videos:', err.message);
     res.status(500).json({ error: 'Error al listar videos' });
@@ -330,6 +440,38 @@ app.get('/api/images/:id', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('Error sirviendo imagen:', err.message);
     res.status(500).json({ error: 'Error al obtener imagen' });
+  }
+});
+
+// ── Servir subtítulos (convierte SRT a VTT automáticamente) ────────
+app.get('/api/subtitles/:id', requireAuth, async (req, res) => {
+  try {
+    const drive = getOwnerDrive();
+    const meta = await drive.files.get({
+      fileId: req.params.id,
+      fields: 'name, mimeType',
+    });
+
+    const fileName = meta.data.name;
+
+    const response = await drive.files.get(
+      { fileId: req.params.id, alt: 'media' },
+      { responseType: 'text' }
+    );
+
+    let content = response.data;
+
+    // Convertir SRT a VTT si es necesario
+    if (fileName.endsWith('.srt')) {
+      content = srtToVtt(content);
+    }
+
+    res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.send(content);
+  } catch (err) {
+    console.error('Error sirviendo subtitulos:', err.message);
+    res.status(500).json({ error: 'Error al obtener subtitulos' });
   }
 });
 

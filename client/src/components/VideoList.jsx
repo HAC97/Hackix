@@ -16,48 +16,106 @@ function getFileIcon(mimeType) {
   return '📹';
 }
 
-function VideoList({ entries, apiUrl, onSelect }) {
-  if (entries.length === 0) {
+function MovieCard({ entry, apiUrl, onSelect }) {
+  return (
+    <div className="video-card" onClick={() => onSelect(entry)}>
+      <div className="card-thumbnail">
+        {entry.image ? (
+          <img
+            src={`${apiUrl}/api/images/${entry.image.id}`}
+            alt={entry.folderName}
+            crossOrigin="use-credentials"
+          />
+        ) : (
+          <div className="card-placeholder">{getFileIcon(entry.video.mimeType)}</div>
+        )}
+        <div className="play-overlay">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="#fff">
+            <polygon points="5,3 19,12 5,21" />
+          </svg>
+        </div>
+      </div>
+      <div className="card-info">
+        <h3 className="card-title" title={entry.folderName}>{entry.folderName}</h3>
+        <div className="card-meta">
+          <span>{formatSize(entry.video.size)}</span>
+          <span>{entry.video.year || '----'}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SeriesCard({ series, apiUrl, onSelect }) {
+  return (
+    <div className="video-card series-card" onClick={() => onSelect(series)}>
+      <div className="card-thumbnail">
+        {series.image ? (
+          <img
+            src={`${apiUrl}/api/images/${series.image.id}`}
+            alt={series.name}
+            crossOrigin="use-credentials"
+          />
+        ) : (
+          <div className="card-placeholder">📺</div>
+        )}
+        <div className="series-badge">{series.episodes.length} capítulos</div>
+        <div className="play-overlay">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="#fff">
+            <polygon points="9,3 23,12 9,21" />
+          </svg>
+        </div>
+      </div>
+      <div className="card-info">
+        <h3 className="card-title" title={series.name}>{series.name}</h3>
+        <div className="card-meta">
+          <span>{series.episodes.length} capítulos</span>
+          <span>{new Set(series.episodes.map(e => e.season)).size} temporadas</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VideoList({ movies, seriesList, apiUrl, onSelectMovie, onSelectSeries }) {
+  const totalItems = movies.length + seriesList.length;
+
+  if (totalItems === 0) {
     return (
       <div className="empty-state">
         <p>No se encontraron carpetas con videos en Hackix.</p>
         <p className="hint">
           Estructura esperada en tu Drive:<br />
-          Hatrix/ &rarr; [Nombre de la carpeta]/ &rarr; video + imagen de portada
+          Hackix/ &rarr; Peliculas/ &rarr; [Nombre]/ &rarr; video + portada<br />
+          Hackix/ &rarr; Series/ &rarr; [Serie]/ &rarr; [Temporada]/ &rarr; [Capitulo]/ &rarr; video + portada
         </p>
       </div>
     );
   }
 
   return (
-    <div className="video-grid">
-      {entries.map((entry) => (
-        <div key={entry.video.id} className="video-card" onClick={() => onSelect(entry)}>
-          <div className="card-thumbnail">
-            {entry.image ? (
-              <img
-                src={`${apiUrl}/api/images/${entry.image.id}`}
-                alt={entry.folderName}
-                crossOrigin="use-credentials"
-              />
-            ) : (
-              <div className="card-placeholder">{getFileIcon(entry.video.mimeType)}</div>
-            )}
-            <div className="play-overlay">
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="#fff">
-                <polygon points="5,3 19,12 5,21" />
-              </svg>
-            </div>
-          </div>
-          <div className="card-info">
-            <h3 className="card-title" title={entry.folderName}>{entry.folderName}</h3>
-            <div className="card-meta">
-              <span>{formatSize(entry.video.size)}</span>
-              <span>{entry.video.name}</span>
-            </div>
+    <div className="video-sections">
+      {movies.length > 0 && (
+        <div className="video-section">
+          <h2 className="section-title">Películas</h2>
+          <div className="video-grid">
+            {movies.map(entry => (
+              <MovieCard key={entry.video.id} entry={entry} apiUrl={apiUrl} onSelect={onSelectMovie} />
+            ))}
           </div>
         </div>
-      ))}
+      )}
+
+      {seriesList.length > 0 && (
+        <div className="video-section">
+          <h2 className="section-title">Series</h2>
+          <div className="video-grid">
+            {seriesList.map(series => (
+              <SeriesCard key={series.name} series={series} apiUrl={apiUrl} onSelect={onSelectSeries} />
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,0 +1,130 @@
+/* ── Series Header ──────────────────── */
+.series-header {
+  display: flex;
+  gap: 20px;
+  margin-bottom: 32px;
+  align-items: flex-start;
+}
+
+.series-poster {
+  width: 200px;
+  height: 300px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid #30363d;
+  flex-shrink: 0;
+}
+
+.series-poster-placeholder {
+  width: 200px;
+  height: 300px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 4rem;
+  flex-shrink: 0;
+}
+
+.series-header-info {
+  padding-top: 4px;
+}
+
+.series-detail-title {
+  font-size: 1.6rem;
+  font-weight: 600;
+  color: #e6edf3;
+  margin: 0 0 6px 0;
+}
+
+.series-detail-meta {
+  font-size: 0.9rem;
+  color: #8b949e;
+  margin: 0;
+}
+
+/* ── Seasons ────────────────────────── */
+.season-section {
+  margin-bottom: 28px;
+}
+
+.season-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #c9d1d9;
+  margin: 0 0 12px 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #21262d;
+}
+
+/* ── Episode Grid ───────────────────── */
+.episode-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+/* ── Episode Card ───────────────────── */
+.episode-card {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.2s, transform 0.15s;
+}
+
+.episode-card:hover {
+  border-color: #58a6ff;
+  transform: translateY(-2px);
+}
+
+.episode-thumbnail {
+  position: relative;
+  background: #0d1117;
+  aspect-ratio: 16/9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.episode-thumbnail img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.episode-placeholder {
+  font-size: 2rem;
+  opacity: 0.6;
+}
+
+.episode-thumbnail .play-overlay {
+  opacity: 0;
+}
+
+.episode-card:hover .episode-thumbnail .play-overlay {
+  opacity: 1;
+}
+
+.episode-info {
+  padding: 10px 12px;
+}
+
+.episode-title {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #e6edf3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin: 0 0 4px 0;
+}
+
+.episode-meta {
+  font-size: 0.75rem;
+  color: #8b949e;
+}
