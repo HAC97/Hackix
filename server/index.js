@@ -335,6 +335,7 @@ app.get('/api/videos', requireAuth, async (req, res) => {
 
           for (const episode of episodeFolders) {
             const entry = await processMediaFolder(drive, episode, {
+              type: 'episode',
               season: seasonLabel,
             });
             if (entry.video) episodes.push(entry);
@@ -374,6 +375,10 @@ app.get('/api/videos/:id/stream', requireAuth, async (req, res) => {
     const mimeType = meta.data.mimeType;
     const range = req.headers.range;
 
+    // Handle client disconnect
+    let aborted = false;
+    req.on('close', () => { aborted = true; });
+
     if (range) {
       const parts = range.replace(/bytes=/, '').split('-');
       const start = parseInt(parts[0], 10);
@@ -391,6 +396,12 @@ app.get('/api/videos/:id/stream', requireAuth, async (req, res) => {
         { fileId, alt: 'media' },
         { headers: { Range: `bytes=${start}-${end}` }, responseType: 'stream' }
       );
+      stream.data.on('error', (err) => {
+        if (!aborted && !res.headersSent) {
+          console.error('Stream error:', err.message);
+          res.status(500).end();
+        }
+      });
       stream.data.pipe(res);
     } else {
       res.writeHead(200, {
@@ -398,6 +409,7 @@ app.get('/api/videos/:id/stream', requireAuth, async (req, res) => {
         'Content-Type': mimeType,
         'Accept-Ranges': 'bytes',
         'Content-Disposition': `inline; filename="${fileName}"`,
+        'Cache-Control': 'no-cache',
       });
 
       const stream = await drive.files.get(
@@ -406,8 +418,14 @@ app.get('/api/videos/:id/stream', requireAuth, async (req, res) => {
       );
 
       stream.data.on('error', (err) => {
-        console.error('Stream error:', err.message);
-        if (!res.headersSent) res.status(500).end();
+        if (!aborted && !res.headersSent) {
+          console.error('Stream error:', err.message);
+          res.status(500).end();
+        }
+      });
+
+      stream.data.on('end', () => {
+        if (!res.writableEnded) res.end();
       });
 
       stream.data.pipe(res);

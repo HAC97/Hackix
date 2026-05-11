@@ -7,6 +7,38 @@
   color: #8b949e;
 }
 
+/* ── Initial Loading ─────────────── */
+.initial-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 60vh;
+  gap: 16px;
+}
+
+.initial-loading .logo-wrapper {
+  opacity: 0.8;
+}
+
+.spinner-large {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #30363d;
+  border-top: 3px solid #58a6ff;
+  border-radius: 50%;
+  animation: app-spin 0.8s linear infinite;
+}
+
+@keyframes app-spin {
+  to { transform: rotate(360deg); }
+}
+
+.loading-text {
+  color: #8b949e;
+  font-size: 1rem;
+}
+
 .app {
   min-height: 100vh;
   display: flex;
@@ -45,6 +77,22 @@
   width: 28px;
   height: 28px;
   border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.avatar-fallback {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #30363d;
+  color: #8b949e;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 600;
+  flex-shrink: 0;
 }
 
 .btn-logout {

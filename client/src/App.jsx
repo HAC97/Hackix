@@ -17,7 +17,9 @@ function App() {
   const [currentSeries, setCurrentSeries] = useState(null);
   const [currentEntry, setCurrentEntry] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [warning, setWarning] = useState(null);
+  const [avatarError, setAvatarError] = useState(false);
 
   useEffect(() => {
     checkAuth();
@@ -28,6 +30,7 @@ function App() {
       const res = await fetch(`${API}/api/auth/status`, { credentials: 'include' });
       const data = await res.json();
       setAuth({ checked: true, authenticated: data.authenticated, user: data.user || null });
+      setAvatarError(false);
     } catch {
       setAuth({ checked: true, authenticated: false, user: null });
     }
@@ -46,6 +49,7 @@ function App() {
       console.error('Error fetching videos:', err);
     }
     setLoading(false);
+    setInitialLoading(false);
   };
 
   useEffect(() => {
@@ -62,6 +66,7 @@ function App() {
     setCurrentSeries(null);
     setCurrentEntry(null);
     setWarning(null);
+    setAvatarError(false);
   };
 
   if (!auth.checked) {
@@ -81,7 +86,19 @@ function App() {
         <div className="header-right">
           {auth.user && (
             <span className="user-name">
-              {auth.user.picture && <img src={auth.user.picture} alt="" className="avatar" />}
+              {auth.user.picture && !avatarError ? (
+                <img
+                  src={auth.user.picture}
+                  alt=""
+                  className="avatar"
+                  referrerPolicy="no-referrer"
+                  onError={() => setAvatarError(true)}
+                />
+              ) : (
+                <span className="avatar-fallback">
+                  {(auth.user.name || auth.user.email || '?').charAt(0).toUpperCase()}
+                </span>
+              )}
               {auth.user.name || auth.user.email}
             </span>
           )}
@@ -101,7 +118,21 @@ function App() {
                 ? `${currentSeries?.name || ''} - ${currentEntry.season} - ${currentEntry.folderName}`
                 : currentEntry.folderName}
               subtitles={currentEntry.subtitles}
+              posterUrl={currentEntry.image ? `${API}/api/images/${currentEntry.image.id}` : null}
               apiUrl={API}
+              {...(currentEntry.type === 'episode' && currentSeries
+                ? (() => {
+                    const episodes = currentSeries.episodes;
+                    const idx = episodes.findIndex(ep => ep.video.id === currentEntry.video.id);
+                    return {
+                      episodeIndex: idx >= 0 ? idx : -1,
+                      episodeCount: episodes.length,
+                      onPrev: idx > 0 ? () => setCurrentEntry(episodes[idx - 1]) : null,
+                      onNext: idx < episodes.length - 1 ? () => setCurrentEntry(episodes[idx + 1]) : null,
+                    };
+                  })()
+                : {}
+              )}
             />
           </div>
         ) : currentSeries ? (
@@ -111,6 +142,12 @@ function App() {
             onBack={() => setCurrentSeries(null)}
             onSelect={(entry) => setCurrentEntry(entry)}
           />
+        ) : initialLoading ? (
+          <div className="initial-loading">
+            <Logo size={48} />
+            <div className="spinner-large" />
+            <span className="loading-text">Cargando biblioteca...</span>
+          </div>
         ) : (
           <>
             <div className="toolbar">
