@@ -118,6 +118,7 @@ function App() {
                 ? `${currentSeries?.name || ''} - ${currentEntry.season} - ${currentEntry.folderName}`
                 : currentEntry.folderName}
               subtitles={currentEntry.subtitles}
+              audioTracks={currentEntry.audioTracks}
               posterUrl={currentEntry.image ? `${API}/api/images/${currentEntry.image.id}` : null}
               apiUrl={API}
               {...(currentEntry.type === 'episode' && currentSeries

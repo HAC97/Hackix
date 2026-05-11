@@ -6,6 +6,8 @@ const cors = require('cors');
 const { google } = require('googleapis');
 const { OAuth2Client } = require('google-auth-library');
 const path = require('path');
+const { spawn } = require('child_process');
+const { Transform } = require('stream');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -28,6 +30,11 @@ const IMAGE_MIME_TYPES = [
   'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp', 'image/tiff',
 ];
 
+const AUDIO_MIME_TYPES = [
+  'audio/mpeg', 'audio/mp4', 'audio/ogg', 'audio/aac', 'audio/wav', 'audio/webm',
+  'audio/x-m4a', 'audio/flac', 'audio/opus',
+];
+
 // ── Helpers ─────────────────────────────────────────────────────────
 function detectLang(filename) {
   const match = filename.match(/\.([a-z]{2}(-[A-Z]{2})?)\.(srt|vtt)$/i);
@@ -42,6 +49,37 @@ function detectLang(filename) {
   if (base.includes('ko') || base.includes('korean')) return 'ko';
   if (base.includes('zh') || base.includes('chinese')) return 'zh';
   return 'es';
+}
+
+function audioLabel(filename) {
+  const noExt = filename.replace(/\.\w+$/, '');
+  const nameLower = noExt.toLowerCase();
+  if (nameLower.includes('latino')) return 'Latino';
+  if (nameLower.includes('castellano')) return 'Castellano';
+  if (nameLower.includes('espanol') || nameLower.includes('español')) return 'Español';
+  const lang = detectLang(filename + '.srt');
+  const map = { es: 'Español', en: 'English', fr: 'Français', pt: 'Português', de: 'Deutsch', ja: '日本語', ko: '한국어', zh: '中文' };
+  if (map[lang] && map[lang] !== 'Español') return map[lang];
+  return noExt || 'Audio';
+}
+
+function embeddedStreamLabel(stream) {
+  const tags = stream.tags || {};
+  const lang = (tags.language || '').toLowerCase();
+  const title = tags.title || '';
+  const LANG = {
+    spa: 'Español', es: 'Español', 'es-es': 'Castellano', 'es-mx': 'Latino',
+    eng: 'English', en: 'English', fra: 'Français', fr: 'Français',
+    por: 'Português', pt: 'Português', deu: 'Deutsch', de: 'Deutsch',
+    jpn: '日本語', ja: '日本語', kor: '한국어', ko: '한국어',
+    zho: '中文', zh: '中文', ita: 'Italiano', it: 'Italiano',
+  };
+  if (lang) {
+    const name = LANG[lang] || lang.toUpperCase();
+    return title ? `${name} (${title})` : name;
+  }
+  if (title) return title;
+  return `Pista ${stream.index}`;
 }
 
 function extractSeasonNumber(folderName) {
@@ -105,6 +143,10 @@ function getOwnerDrive() {
 }
 
 // ── Middleware ───────────────────────────────────────────────────────
+if (NODE_ENV === 'production') {
+  app.set('trust proxy', 1);
+}
+
 app.use(cors({
   origin: NODE_ENV === 'production' ? true : FRONTEND_URL,
   credentials: true,
@@ -114,20 +156,18 @@ app.use(session({
   secret: process.env.SESSION_SECRET || 'dev-secret-change-me',
   resave: false,
   saveUninitialized: false,
+  rolling: true,
   cookie: {
-    secure: NODE_ENV === 'production',
+    secure: process.env.COOKIE_SECURE === 'true' || (NODE_ENV === 'production' && process.env.COOKIE_SECURE !== 'false'),
     maxAge: 24 * 60 * 60 * 1000,
-    sameSite: NODE_ENV === 'production' ? 'none' : 'lax',
+    sameSite: process.env.COOKIE_SECURE === 'true' && NODE_ENV === 'production' ? 'none' : 'lax',
   },
 }));
-
-if (NODE_ENV === 'production') {
-  app.set('trust proxy', 1);
-}
 
 // ── Auth Middleware (solo verifica que el usuario hizo login) ────────
 function requireAuth(req, res, next) {
   if (!req.session.tokens) {
+    console.log(`401: ${req.method} ${req.path} — session:${!!req.session} tokens:${!!req.session?.tokens} sid:${req.sessionID?.slice(0,8)}`);
     return res.status(401).json({ error: 'No autenticado. Ve a /auth/google' });
   }
   next();
@@ -234,12 +274,17 @@ async function processMediaFolder(drive, folder, extra = {}) {
     f.mimeType === 'text/vtt'
   ).map(s => ({ id: s.id, name: s.name, lang: detectLang(s.name) }));
 
+  const audioTracks = files.filter(f =>
+    AUDIO_MIME_TYPES.includes(f.mimeType)
+  ).map(a => ({ id: a.id, name: a.name, label: audioLabel(a.name) }));
+
   return {
     ...extra,
     folderName: folder.name,
     video: video ? { id: video.id, name: video.name, mimeType: video.mimeType, size: video.size, year: video.createdTime ? new Date(video.createdTime).getFullYear() : null } : null,
     image: image ? { id: image.id, name: image.name } : null,
     subtitles: subtitles.length > 0 ? subtitles : null,
+    audioTracks: audioTracks.length > 0 ? audioTracks : null,
   };
 }
 
@@ -375,9 +420,12 @@ app.get('/api/videos/:id/stream', requireAuth, async (req, res) => {
     const mimeType = meta.data.mimeType;
     const range = req.headers.range;
 
-    // Handle client disconnect
     let aborted = false;
     req.on('close', () => { aborted = true; });
+    res.on('error', (err) => {
+      if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return;
+      console.error('Response error:', err.message);
+    });
 
     if (range) {
       const parts = range.replace(/bytes=/, '').split('-');
@@ -397,12 +445,15 @@ app.get('/api/videos/:id/stream', requireAuth, async (req, res) => {
         { headers: { Range: `bytes=${start}-${end}` }, responseType: 'stream' }
       );
       stream.data.on('error', (err) => {
+        if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return;
         if (!aborted && !res.headersSent) {
           console.error('Stream error:', err.message);
           res.status(500).end();
         }
       });
-      stream.data.pipe(res);
+      stream.data.on('error', () => {});
+    res.on('error', () => {});
+    stream.data.pipe(res);
     } else {
       res.writeHead(200, {
         'Content-Length': fileSize,
@@ -418,6 +469,7 @@ app.get('/api/videos/:id/stream', requireAuth, async (req, res) => {
       );
 
       stream.data.on('error', (err) => {
+        if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return;
         if (!aborted && !res.headersSent) {
           console.error('Stream error:', err.message);
           res.status(500).end();
@@ -428,7 +480,9 @@ app.get('/api/videos/:id/stream', requireAuth, async (req, res) => {
         if (!res.writableEnded) res.end();
       });
 
-      stream.data.pipe(res);
+      stream.data.on('error', () => {});
+    res.on('error', () => {});
+    stream.data.pipe(res);
     }
   } catch (err) {
     console.error('Error streameando video:', err.message);
@@ -454,6 +508,8 @@ app.get('/api/images/:id', requireAuth, async (req, res) => {
       { fileId: req.params.id, alt: 'media' },
       { responseType: 'stream' }
     );
+    stream.data.on('error', () => {});
+    res.on('error', () => {});
     stream.data.pipe(res);
   } catch (err) {
     console.error('Error sirviendo imagen:', err.message);
@@ -493,6 +549,141 @@ app.get('/api/subtitles/:id', requireAuth, async (req, res) => {
   }
 });
 
+// ── Audio tracks: detectar pistas de audio embebidas ──────────────────
+const audioTracksCache = new Map();
+
+app.get('/api/videos/:id/audio-tracks', requireAuth, async (req, res) => {
+  try {
+    const fileId = req.params.id;
+    const cacheKey = `at_${fileId}`;
+    if (audioTracksCache.has(cacheKey)) {
+      return res.json({ tracks: audioTracksCache.get(cacheKey) });
+    }
+
+    const drive = getOwnerDrive();
+    const driveStream = await drive.files.get(
+      { fileId, alt: 'media' },
+      { responseType: 'stream' }
+    );
+
+    const ffprobe = spawn('ffprobe', [
+      '-v', 'quiet', '-print_format', 'json',
+      '-show_streams', '-select_streams', 'a', '-'
+    ]);
+
+    let output = '';
+    let bytesRead = 0;
+    const MAX_BYTES = 30 * 1024 * 1024;
+
+    ffprobe.stdout.on('data', d => { output += d; });
+    ffprobe.stderr.on('data', () => {});
+
+    driveStream.data.on('data', (chunk) => {
+      bytesRead += chunk.length;
+      if (bytesRead <= MAX_BYTES) {
+        ffprobe.stdin.write(chunk);
+      }
+      if (bytesRead >= MAX_BYTES) {
+        if (!driveStream.data.destroyed) driveStream.data.destroy();
+        ffprobe.stdin.end();
+      }
+    });
+
+    driveStream.data.on('end', () => {
+      ffprobe.stdin.end();
+    });
+
+    driveStream.data.on('error', () => {
+      ffprobe.stdin.end();
+    });
+
+    ffprobe.on('close', (code) => {
+      try {
+        if (code !== 0 || !output) {
+          audioTracksCache.set(cacheKey, []);
+          return res.json({ tracks: [] });
+        }
+        const data = JSON.parse(output);
+        const tracks = (data.streams || []).map((s) => ({
+          index: s.index,
+          label: embeddedStreamLabel(s),
+        }));
+        audioTracksCache.set(cacheKey, tracks);
+        res.json({ tracks });
+      } catch (_) {
+        audioTracksCache.set(cacheKey, []);
+        res.json({ tracks: [] });
+      }
+    });
+  } catch (err) {
+    console.error('Error detectando pistas de audio:', err.message);
+    res.json({ tracks: [] });
+  }
+});
+
+// ── Stream de pista de audio individual ──────────────────────────────
+app.get('/api/videos/:id/audio/:streamIndex/stream', requireAuth, async (req, res) => {
+  try {
+    const fileId = req.params.id;
+    const streamIndex = parseInt(req.params.streamIndex, 10);
+    const drive = getOwnerDrive();
+
+    const driveStream = await drive.files.get(
+      { fileId, alt: 'media' },
+      { responseType: 'stream' }
+    );
+
+    const ffmpeg = spawn('ffmpeg', [
+      '-i', 'pipe:0',
+      '-map', `0:a:${streamIndex}`,
+      '-c:a', 'libmp3lame',
+      '-b:a', '192k',
+      '-f', 'mp3',
+      'pipe:1'
+    ]);
+
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Cache-Control', 'no-cache');
+
+    let aborted = false;
+    req.on('close', () => { aborted = true; });
+    res.on('error', (err) => {
+      if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return;
+      console.error('Audio response error:', err.message);
+    });
+
+    driveStream.data.on('error', (err) => {
+      if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return;
+      if (!aborted) ffmpeg.kill();
+    });
+    ffmpeg.stdin.on('error', (err) => {
+      if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return;
+    });
+    ffmpeg.stdout.on('error', (err) => {
+      if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return;
+    });
+    ffmpeg.on('error', (err) => {
+      if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return;
+      if (!aborted && !res.headersSent) {
+        res.status(500).end();
+      }
+    });
+
+    driveStream.data.pipe(ffmpeg.stdin);
+    ffmpeg.stdout.pipe(res);
+    ffmpeg.stderr.on('data', () => {});
+
+    req.on('close', () => {
+      aborted = true;
+      if (!driveStream.data.destroyed) driveStream.data.destroy();
+      ffmpeg.kill();
+    });
+  } catch (err) {
+    console.error('Error streameando audio:', err.message);
+    if (!res.headersSent) res.status(500).json({ error: 'Error al reproducir el audio' });
+  }
+});
+
 // ── Serve React build in production ─────────────────────────────────
 if (NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, '..', 'client', 'build')));
@@ -502,6 +693,11 @@ if (NODE_ENV === 'production') {
 }
 
 // ── Start ───────────────────────────────────────────────────────────
+process.on('uncaughtException', (err) => {
+  if (err.code === 'EPIPE' || err.code === 'ECONNRESET' || err.code === 'ERR_STREAM_WRITE_AFTER_END') return;
+  console.error('Uncaught:', err.message);
+});
+
 app.listen(PORT, () => {
   console.log(`Servidor corriendo en puerto ${PORT}`);
   console.log(`Frontend: ${FRONTEND_URL}`);

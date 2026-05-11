@@ -40,8 +40,9 @@ const LANG_LABELS = {
   de: 'Deutsch', ja: '日本語', ko: '한국어', zh: '中文',
 };
 
-function Player({ videoId, title, subtitles, posterUrl, apiUrl, episodeIndex, episodeCount, onPrev, onNext }) {
+function Player({ videoId, title, subtitles, posterUrl, apiUrl, episodeIndex, episodeCount, onPrev, onNext, audioTracks }) {
   const videoRef = useRef(null);
+  const audioRef = useRef(null);
   const containerRef = useRef(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -53,7 +54,50 @@ function Player({ videoId, title, subtitles, posterUrl, apiUrl, episodeIndex, ep
   const [retryCount, setRetryCount] = useState(0);
   const [savedTime, setSavedTime] = useState(null);
   const [showResume, setShowResume] = useState(false);
+  const [selectedAudio, setSelectedAudio] = useState(null);
+  const [allAudioTracks, setAllAudioTracks] = useState(null);
   const lastSaveRef = useRef(0);
+
+  // ── Merge external + embedded audio tracks ──────
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      // Start with external audio files from props
+      const external = (audioTracks || []).map(a => ({
+        id: a.id,
+        label: a.label,
+        type: 'external',
+      }));
+
+      // Fetch embedded tracks from server
+      try {
+        const res = await fetch(`${apiUrl}/api/videos/${videoId}/audio-tracks`, { credentials: 'include' });
+        const data = await res.json();
+        const embedded = (data.tracks || []).map(t => ({
+          id: `${videoId}:${t.index}`,
+          label: t.label,
+          type: 'embedded',
+          streamIndex: t.index,
+        }));
+
+        if (!cancelled) {
+          const merged = [...external, ...embedded];
+          setAllAudioTracks(merged.length > 1 ? merged : null);
+        }
+      } catch (_) {
+        if (!cancelled) {
+          setAllAudioTracks(external.length > 1 ? external : null);
+        }
+      }
+    }
+
+    setAllAudioTracks(null);
+    setSelectedAudio(null);
+    load();
+
+    return () => { cancelled = true; };
+  }, [videoId, apiUrl, audioTracks]);
 
   const streamUrl = `${apiUrl}/api/videos/${videoId}/stream`;
 
@@ -103,6 +147,58 @@ function Player({ videoId, title, subtitles, posterUrl, apiUrl, episodeIndex, ep
   const handleRestart = useCallback(() => {
     clearProgress();
   }, [clearProgress]);
+
+  // ── Audio track switching ─────────────────────
+  const handleAudioChange = useCallback((e) => {
+    const trackKey = e.target.value;
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (!trackKey) {
+      video.muted = false;
+      setSelectedAudio(null);
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = '';
+      }
+    } else {
+      const track = allAudioTracks?.find(t => t.id === trackKey);
+      video.muted = true;
+      setSelectedAudio(track);
+    }
+  }, [allAudioTracks]);
+
+  const getAudioSrc = useCallback(() => {
+    if (!selectedAudio) return '';
+    if (selectedAudio.type === 'embedded') {
+      return `${apiUrl}/api/videos/${videoId}/audio/${selectedAudio.streamIndex}/stream`;
+    }
+    return `${apiUrl}/api/videos/${selectedAudio.id}/stream`;
+  }, [selectedAudio, videoId, apiUrl]);
+
+  // Sync external audio with video
+  useEffect(() => {
+    const video = videoRef.current;
+    const audio = audioRef.current;
+    if (!video || !audio || !selectedAudio) return;
+
+    const onPlay = () => { audio.play().catch(() => {}); };
+    const onPause = () => { audio.pause(); };
+    const onSeeked = () => { audio.currentTime = video.currentTime; };
+    const onRateChange = () => { audio.playbackRate = video.playbackRate; };
+
+    video.addEventListener('play', onPlay);
+    video.addEventListener('pause', onPause);
+    video.addEventListener('seeked', onSeeked);
+    video.addEventListener('ratechange', onRateChange);
+
+    return () => {
+      video.removeEventListener('play', onPlay);
+      video.removeEventListener('pause', onPause);
+      video.removeEventListener('seeked', onSeeked);
+      video.removeEventListener('ratechange', onRateChange);
+    };
+  }, [selectedAudio]);
 
   // ── Save on pause and before unmount ──────────
   useEffect(() => {
@@ -293,17 +389,31 @@ function Player({ videoId, title, subtitles, posterUrl, apiUrl, episodeIndex, ep
         </div>
       )}
 
-      {availableSubs.length > 0 && (
+      {(availableSubs.length > 0 || (allAudioTracks && allAudioTracks.length > 0)) && (
         <div className="subtitle-controls">
-          <div className="subtitle-control">
-            <label>Subtítulos:</label>
-            <select value={selectedSub?.id || ''} onChange={handleSubtitleChange}>
-              <option value="">Desactivados</option>
-              {availableSubs.map(s => (
-                <option key={s.id} value={s.id}>{langLabel(s)}</option>
-              ))}
-            </select>
-          </div>
+          {allAudioTracks && allAudioTracks.length > 0 && (
+            <div className="subtitle-control">
+              <label>Audio:</label>
+              <select value={selectedAudio?.id || ''} onChange={handleAudioChange}>
+                <option value="">Original</option>
+                {allAudioTracks.map(a => (
+                  <option key={a.id} value={a.id}>{a.label}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {availableSubs.length > 0 && (
+            <div className="subtitle-control">
+              <label>Subtítulos:</label>
+              <select value={selectedSub?.id || ''} onChange={handleSubtitleChange}>
+                <option value="">Desactivados</option>
+                {availableSubs.map(s => (
+                  <option key={s.id} value={s.id}>{langLabel(s)}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {selectedSub && (
             <div className="subtitle-control">
@@ -320,6 +430,15 @@ function Player({ videoId, title, subtitles, posterUrl, apiUrl, episodeIndex, ep
             </div>
           )}
         </div>
+      )}
+
+      {selectedAudio && (
+        <audio
+          ref={audioRef}
+          src={getAudioSrc()}
+          preload="auto"
+          crossOrigin="use-credentials"
+        />
       )}
     </div>
   );
